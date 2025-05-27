@@ -48,6 +48,8 @@ docker run --rm -it postgres-mcp postgresql://username:password@host.docker.inte
 
 To configure the server for use with an LLM agent:
 
+Using Docker images
+
 ```json
 {
   "mcpServers": {
