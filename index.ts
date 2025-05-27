@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import pg from "pg";
+import * as pg from "pg";
 
 // This is the entry point for the PostgreSQL MCP server.
 // It initializes the server and connects it to the standard input/output transport.
@@ -127,7 +127,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () =>
                 inputSchema: {
                     type: "object",
                     properties: {
-                        table: { type: "string", description: "The name of the table to insert into" },
+                        table: { type: "string", description: "The name of the row to insert into" },
                         values: { type: "object", description: "The values to insert into the table" }
                     },
                     required: ["table", "values"],
@@ -157,6 +157,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () =>
                     },
                     required: ["table", "where"],
                 }
+            },
+            {
+                name: "execute",
+                description: "Execute a general SQL command (e.g., CREATE TABLE, ALTER TABLE)",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        sql: { type: "string", description: "The SQL command to execute" }
+                    },
+                    required: ["sql"],
+                }
             }
         ]
     }
@@ -174,6 +185,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
             case "query": {
                 await client.query("BEGIN TRANSACTION READ ONLY");
                 const result = await client.query(args.sql);
+                await client.query("COMMIT");
                 return {
                     content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
                     isError: false,
@@ -181,12 +193,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
             }
 
             case "insert": {
+                await client.query("BEGIN TRANSACTION READ WRITE");
                 const columns = Object.keys(args.values).map((key) => `"${key}"`).join(", ");
                 const values = Object.values(args.values);
                 const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
                 const sql = `INSERT INTO "${args.table}" (${columns}) VALUES (${placeholders}) RETURNING *`;
 
                 const result = await client.query(sql, values);
+                await client.query("COMMIT");
                 return {
                     content: [{ type: "text", text: JSON.stringify(result.rows[0], null, 2) }],
                     isError: false,
@@ -194,6 +208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
             }
 
             case "update": {
+                await client.query("BEGIN TRANSACTION READ WRITE");
                 const setParts = Object.entries(args.values)
                     .map(([key], i) => `"${key}" = $${i + 1}`)
                     .join(", ");
@@ -201,6 +216,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
                 const sql = `UPDATE "${args.table}" SET ${setParts} WHERE ${args.where} RETURNING *`;
 
                 const result = await client.query(sql, values);
+                await client.query("COMMIT");
                 return {
                     content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
                     isError: false,
@@ -208,10 +224,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
             }
 
             case "delete": {
+                await client.query("BEGIN TRANSACTION READ WRITE");
                 const sql = `DELETE FROM "${args.table}" WHERE ${args.where} RETURNING *`;
+
                 const result = await client.query(sql);
+                await client.query("COMMIT");
                 return {
                     content: [{ type: "text", text: JSON.stringify(result.rows, null, 2) }],
+                    isError: false,
+                };
+            }
+
+            case "execute": {
+                await client.query("BEGIN TRANSACTION READ WRITE");
+                await client.query(args.sql);
+                await client.query("COMMIT");
+                return {
+                    content: [{ type: "text", text: "SQL command executed successfully." }],
                     isError: false,
                 };
             }
@@ -220,16 +249,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
                 throw new Error(`Unknown tool: ${name}`);
         }
     } catch (error: any) {
+        await client.query("ROLLBACK").catch(() => { });
         return {
             content: [{ type: "text", text: `Error: ${error.message}` }],
             isError: true,
         };
     } finally {
-        await client.query("ROLLBACK").catch(() => { });
         client.release();
     }
 });
-
 
 async function runServer()
 {
