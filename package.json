@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc dist/*.js",
     "prepare": "npm run build",
